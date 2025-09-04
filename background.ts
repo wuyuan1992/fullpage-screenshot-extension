@@ -21,7 +21,7 @@ async function captureAndStitch() {
   const tabId = activeTab.id
 
   try {
-    // 在页面环境中预处理，记录样式并隐藏滚动条
+    // 在页面环境中预处理，记录样式并隐藏滚动条 + 包裹器以“虚拟滚动”
     const prep = await execInPage<{ totalHeight: number; viewportHeight: number; dpr: number }>(
       tabId,
       () => {
@@ -29,7 +29,7 @@ async function captureAndStitch() {
         if (!w.__snapshotBackup) {
           const backups: Array<{ el: HTMLElement; cssText: string }> = []
           const originalScrollTop = window.scrollY
-          const originalOverflow = (document.body.style.overflow || "")
+          const originalOverflow = document.body.style.overflow || ""
           const all = Array.from(document.querySelectorAll("*")) as HTMLElement[]
           all.forEach((el) => {
             const cs = getComputedStyle(el)
@@ -44,11 +44,39 @@ async function captureAndStitch() {
               el.style.setProperty("z-index", "auto", "important")
             }
           })
-          document.body.style.overflow = "hidden"
-          w.__snapshotBackup = { backups, originalScrollTop, originalOverflow }
+          // 使用样式隐藏滚动条，避免改变滚动容器行为
+          let styleEl = document.querySelector('style[data-snapshot="hide-scrollbar"]') as HTMLStyleElement | null
+          if (!styleEl) {
+            styleEl = document.createElement("style")
+            styleEl.setAttribute("data-snapshot", "hide-scrollbar")
+            styleEl.textContent = `
+              html::-webkit-scrollbar, body::-webkit-scrollbar { display: none !important; }
+              html, body { scrollbar-width: none !important; }
+            `
+            document.documentElement.appendChild(styleEl)
+          }
+
+          // 包裹器：将 body 子节点移入，之后通过 transform 模拟滚动，避免触发 scroll 事件
+          let wrapper = document.querySelector('[data-snapshot="wrapper"]') as HTMLElement | null
+          if (!wrapper) {
+            wrapper = document.createElement("div")
+            wrapper.setAttribute("data-snapshot", "wrapper")
+            wrapper.style.cssText = "width: 100%; transform: translateY(0); will-change: transform;"
+            const nodes: ChildNode[] = []
+            document.body.childNodes.forEach((n) => {
+              if (n !== wrapper) nodes.push(n)
+            })
+            nodes.forEach((n) => wrapper!.appendChild(n))
+            document.body.appendChild(wrapper)
+          }
+
+          w.__snapshotBackup = { backups, originalScrollTop, originalOverflow, styleEl }
         }
+        // 使用 wrapper 的实际高度作为页面内容高度，避免 scrollHeight 与虚拟滚动不一致导致画布过高
+        const wrapperEl = document.querySelector('[data-snapshot="wrapper"]') as HTMLElement | null
+        const contentHeight = wrapperEl ? wrapperEl.getBoundingClientRect().height : document.documentElement.scrollHeight
         return {
-          totalHeight: document.documentElement.scrollHeight,
+          totalHeight: contentHeight,
           viewportHeight: window.innerHeight,
           dpr: window.devicePixelRatio || 1
         }
@@ -61,9 +89,13 @@ async function captureAndStitch() {
     const images: string[] = []
     for (let i = 0; i < steps; i++) {
       const top = Math.min(i * viewportHeight, Math.max(0, totalHeight - viewportHeight))
+      // 使用 transform 模拟滚动，避免触发 scroll 驱动的“absolute 动态 top”
       await execInPage(tabId, (y: number) => {
-        window.scrollTo(0, y)
-        return { y: window.scrollY }
+        const wrapper = document.querySelector('[data-snapshot="wrapper"]') as HTMLElement | null
+        if (wrapper) {
+          wrapper.style.transform = `translateY(-${y}px)`
+        }
+        return { y }
       }, [top])
       // 等待渲染稳定 + 节流，避免超过每秒调用限制
       await delay(CAPTURE_BASE_DELAY_MS)
@@ -87,9 +119,20 @@ async function captureAndStitch() {
         const w = window as any
         const b = w.__snapshotBackup
         if (b) {
-          (b.backups || []).forEach((item: { el: HTMLElement; cssText: string }) => {
+          ;(b.backups || []).forEach((item: { el: HTMLElement; cssText: string }) => {
             item.el.style.cssText = item.cssText
           })
+          if (b.styleEl && b.styleEl.parentNode) {
+            b.styleEl.parentNode.removeChild(b.styleEl)
+          }
+          // 还原 DOM 结构：将 wrapper 子节点移回 body 并移除 wrapper
+          const wrapper = document.querySelector('[data-snapshot="wrapper"]') as HTMLElement | null
+          if (wrapper) {
+            while (wrapper.firstChild) {
+              document.body.insertBefore(wrapper.firstChild, wrapper)
+            }
+            wrapper.remove()
+          }
           document.body.style.overflow = b.originalOverflow
           window.scrollTo(0, b.originalScrollTop)
         }
