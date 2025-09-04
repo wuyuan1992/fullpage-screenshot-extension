@@ -1,8 +1,8 @@
 {
-  "name": "snapshot",
-  "displayName": "Snapshot",
-  "version": "0.0.2",
-  "description": "fullpage screenshot",
+  "name": "full-page-screenshot",
+  "displayName": "Screenshot Extension",
+  "version": "1.0.0",
+  "description": "full page screenshot",
   "author": "wuyuan",
   "scripts": {
     "dev": "plasmo dev",
