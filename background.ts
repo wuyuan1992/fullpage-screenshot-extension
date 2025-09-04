@@ -27,20 +27,25 @@ async function captureAndStitch() {
       () => {
         const w = window as any
         if (!w.__snapshotBackup) {
-          const fixed: Array<{ el: HTMLElement; pos: string; top: string }> = []
+          const backups: Array<{ el: HTMLElement; cssText: string }> = []
           const originalScrollTop = window.scrollY
-          const originalOverflow = document.body.style.overflow
+          const originalOverflow = (document.body.style.overflow || "")
           const all = Array.from(document.querySelectorAll("*")) as HTMLElement[]
           all.forEach((el) => {
             const cs = getComputedStyle(el)
-            if (cs.position === "fixed" || cs.position === "sticky") {
-              fixed.push({ el, pos: el.style.position, top: el.style.top })
-              el.style.position = "absolute"
-              el.style.top = `${el.getBoundingClientRect().top + window.scrollY}px`
+            if (cs.position === "fixed") {
+              backups.push({ el, cssText: el.style.cssText })
+              el.style.setProperty("visibility", "hidden", "important")
+              el.style.setProperty("pointer-events", "none", "important")
+            } else if (cs.position === "sticky") {
+              backups.push({ el, cssText: el.style.cssText })
+              el.style.setProperty("position", "static", "important")
+              el.style.setProperty("top", "auto", "important")
+              el.style.setProperty("z-index", "auto", "important")
             }
           })
           document.body.style.overflow = "hidden"
-          w.__snapshotBackup = { fixed, originalScrollTop, originalOverflow }
+          w.__snapshotBackup = { backups, originalScrollTop, originalOverflow }
         }
         return {
           totalHeight: document.documentElement.scrollHeight,
@@ -82,9 +87,8 @@ async function captureAndStitch() {
         const w = window as any
         const b = w.__snapshotBackup
         if (b) {
-          b.fixed.forEach((item: { el: HTMLElement; pos: string; top: string }) => {
-            item.el.style.position = item.pos
-            item.el.style.top = item.top
+          (b.backups || []).forEach((item: { el: HTMLElement; cssText: string }) => {
+            item.el.style.cssText = item.cssText
           })
           document.body.style.overflow = b.originalOverflow
           window.scrollTo(0, b.originalScrollTop)
@@ -158,13 +162,20 @@ async function stitchImages(images: string[], totalHeight: number, viewportHeigh
   if (!ctx) throw new Error("Could not get 2d context from OffscreenCanvas.")
 
   let y = 0
-  for (const url of images) {
+  for (let i = 0; i < images.length; i++) {
+    const url = images[i]
     const bmp = await dataUrlToBitmap(url)
     const remaining = canvas.height - y
     if (remaining <= 0) break
-    const h = Math.min(bmp.height, remaining)
-    ctx.drawImage(bmp, 0, 0, bmp.width, h, 0, y, bmp.width, h)
-    y += h
+    let srcY = 0
+    let srcH = Math.min(bmp.height, remaining)
+    // 最后一张只取底部可用部分，避免重复
+    if (i === images.length - 1 && remaining < bmp.height) {
+      srcY = bmp.height - remaining
+      srcH = remaining
+    }
+    ctx.drawImage(bmp, 0, srcY, bmp.width, srcH, 0, y, bmp.width, srcH)
+    y += srcH
   }
 
   const blob = await canvas.convertToBlob({ type: "image/png" })
